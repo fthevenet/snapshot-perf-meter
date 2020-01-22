@@ -20,31 +20,40 @@ import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.embed.swing.SwingFXUtils;
 import javafx.scene.Scene;
-import javafx.scene.SnapshotParameters;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.image.WritableImage;
 import javafx.scene.layout.StackPane;
 import javafx.scene.transform.Transform;
 import javafx.stage.Stage;
+import org.apache.commons.math.MathException;
+import org.apache.commons.math.distribution.TDistributionImpl;
+import org.apache.commons.math.stat.StatUtils;
 
 import javax.imageio.ImageIO;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryManagerMXBean;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.OptionalDouble;
 import java.util.stream.Collectors;
 
 public class SnapshotPerfMeter extends Application {
 
+    private boolean isVerbose = true;
+
     @Override
     public void start(Stage primaryStage) throws Exception {
-        StackPane root = new StackPane();
-        primaryStage.setScene(new Scene(root));
+        primaryStage.setScene(new Scene(new StackPane()));
+        primaryStage.setWidth(320);
+        primaryStage.setHeight(240);
         primaryStage.show();
+        isVerbose = isOptionEnabled("--verbose");
         displayInfo();
         if (!isOptionEnabled("--version")) {
-            takeSnapshots(isOptionEnabled("--save"));
+            takeSnapshots(1, 10, isOptionEnabled("--save"));
         }
         Platform.exit();
     }
@@ -53,13 +62,11 @@ public class SnapshotPerfMeter extends Application {
         launch(args);
     }
 
-    private void takeSnapshots(boolean saveImages) {
+    private void takeSnapshots(int step, int runs, boolean saveImages) throws Exception {
         var img = new Image(getClass().getResourceAsStream("/Duke_1024.png"));
-        int step = 1;
-        int runs = 10;
         for (int x = step; x <= 8 + step; x += step) {
             for (int y = step; y <= 8 + step; y += step) {
-                // Invoke gc explicitly in order to minimize chances
+                // Invoke gc explicitly, in order to minimize chances
                 // it happens during the metered block
                 System.gc();
 
@@ -68,19 +75,30 @@ public class SnapshotPerfMeter extends Application {
                 node.getTransforms().add(Transform.scale(x, y));
                 int width = (int) Math.ceil(x * img.getWidth());
                 int height = (int) Math.ceil(y * img.getHeight());
+                List<Double> results = new ArrayList<>(runs);
                 for (int i = 0; i < runs; i++) {
-                    String elapsedMs = "";
+                    double elapsedMs;
                     try {
                         long start = System.nanoTime();
                         snapImg = node.snapshot(null, null);
                         long stopTime = System.nanoTime();
-                        elapsedMs = ((stopTime - start) / 1000000.0) + " ms";
+                        elapsedMs = (stopTime - start) / 1000000.0;
+                        results.add(elapsedMs);
                     } catch (Exception e) {
                         // could not complete
-                        elapsedMs = "!failed!";
+                        elapsedMs = Double.NaN;
                     }
-                    System.out.println(String.format("Snapshot %dx%d (run %d): %s", width, height, i, elapsedMs));
+                    if (isVerbose) {
+                        System.out.println(
+                                String.format("Snapshot %dx%d (run %d): %s",
+                                        width, height, i, Double.isNaN(elapsedMs) ? "!failed!" : elapsedMs + " ms"));
+                    }
                 }
+
+                var avg = computeCorrectedAverage(results);
+                System.out.println(
+                        String.format("Snapshot %dx%d (corrected avg): %s",
+                                width, height, avg.isPresent() ? avg + " ms" : "!failure!"));
                 if (saveImages) {
                     var p = Path.of("snapshot_" + width + "x" + height + ".png");
                     try {
@@ -100,6 +118,23 @@ public class SnapshotPerfMeter extends Application {
 
     }
 
+    private OptionalDouble computeCorrectedAverage(List<Double> results) {
+        try {
+            Double outlier = getOutlier(results, 0.95);
+
+            while (outlier != null) {
+                results.remove(outlier);
+                if (isVerbose) {
+                    System.out.println("Pruned value " + outlier + " from average calculation");
+                }
+                outlier = getOutlier(results, 0.95);
+            }
+            return results.stream().mapToDouble(d -> d).average();
+        } catch (MathException e) {
+            return OptionalDouble.empty();
+        }
+    }
+
     private boolean isOptionEnabled(String option) {
         return getParameters().getUnnamed().contains(option);
     }
@@ -107,8 +142,10 @@ public class SnapshotPerfMeter extends Application {
     private void displayInfo() {
         System.out.println("Java Version: " + System.getProperty("java.version"));
         System.out.println("JavaFX Version: " + System.getProperty("javafx.version"));
-        System.out.println("Java VM name: " + System.getProperty("java.vm.name") + " (" + System.getProperty("java.vm.version") + ")");
-        System.out.println("Operating System: " + System.getProperty("os.name") + " (" + System.getProperty("os.version") + ")");
+        System.out.println("Java VM name: " + System.getProperty("java.vm.name") +
+                " (" + System.getProperty("java.vm.version") + ")");
+        System.out.println("Operating System: " + System.getProperty("os.name") +
+                " (" + System.getProperty("os.version") + ")");
         System.out.println("System Architecture: " + System.getProperty("os.arch"));
         System.out.println("JVM Heap Stats: " + getHeapStats());
         System.out.println("Garbage Collectors: " + getGcNames());
@@ -135,5 +172,35 @@ public class SnapshotPerfMeter extends Application {
                 .collect(Collectors.joining(", "));
     }
 
+
+    public Double getOutlier(List<Double> values, double significanceLevel) throws MathException {
+        double outlier = Double.NaN;
+        double[] array = values.stream().mapToDouble(d -> d).toArray();
+        double mean = StatUtils.mean(array);
+        double stddev = Math.sqrt(StatUtils.variance(array));
+        double maxDev = 0;
+        for (var d : values) {
+            if (Math.abs(mean - d) > maxDev) {
+                maxDev = Math.abs(mean - d);
+                outlier = d;
+            }
+        }
+        double grubbs = maxDev / stddev;
+        double size = values.size();
+        if (size < 3) {
+            return null;
+        }
+        TDistributionImpl t = new TDistributionImpl(size - 2.0);
+
+        double criticalValue = t.inverseCumulativeProbability((1.0 - significanceLevel) / (2.0 * size));
+        double criticalValueSquare = criticalValue * criticalValue;
+        double grubbsCompareValue = ((size - 1) / Math.sqrt(size)) *
+                Math.sqrt((criticalValueSquare) / (size - 2.0 + criticalValueSquare));
+        if (grubbs > grubbsCompareValue) {
+            return outlier;
+        } else {
+            return null;
+        }
+    }
 
 }
