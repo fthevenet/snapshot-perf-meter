@@ -98,7 +98,7 @@ public class SnapshotPerfMeter extends Application {
                 var avg = computeCorrectedAverage(results);
                 System.out.println(
                         String.format("Snapshot %dx%d (corrected avg): %s",
-                                width, height, avg.isPresent() ? avg + " ms" : "!failure!"));
+                                width, height, avg.isPresent() ? avg.getAsDouble() + " ms" : "!failed!"));
                 if (saveImages) {
                     var p = Path.of("snapshot_" + width + "x" + height + ".png");
                     try {
