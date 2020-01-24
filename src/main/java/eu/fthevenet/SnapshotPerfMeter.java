@@ -53,7 +53,8 @@ public class SnapshotPerfMeter extends Application {
         isVerbose = isOptionEnabled("--verbose");
         displayInfo();
         if (!isOptionEnabled("--version")) {
-            takeSnapshots(1, 10, isOptionEnabled("--save"));
+            takeSnapshots(getStep(), getMax(), getRuns(), isOptionEnabled("--save"), true);
+            System.out.println("JVM Heap Stats: " + getHeapStats());
         }
         Platform.exit();
     }
@@ -62,10 +63,14 @@ public class SnapshotPerfMeter extends Application {
         launch(args);
     }
 
-    private void takeSnapshots(int step, int runs, boolean saveImages) throws Exception {
+    private void takeSnapshots(int step, int max, int runs, boolean saveImages, boolean makeMarkdownTable) throws Exception {
         var img = new Image(getClass().getResourceAsStream("/Duke_1024.png"));
-        for (int x = step; x <= 8 + step; x += step) {
-            for (int y = step; y <= 8 + step; y += step) {
+        int imgWidth = (int)img.getWidth();
+        int imgHeigt = (int)img.getHeight();
+
+        double[/* snapshot height */][/* snapshot width */] averages = new double[max / step][max / step];
+        for (int x = step; x <= max; x += step) {
+            for (int y = step; y <= max; y += step) {
                 // Invoke gc explicitly, in order to minimize chances
                 // it happens during the metered block
                 System.gc();
@@ -73,8 +78,8 @@ public class SnapshotPerfMeter extends Application {
                 WritableImage snapImg = null;
                 var node = new ImageView(img);
                 node.getTransforms().add(Transform.scale(x, y));
-                int width = (int) Math.ceil(x * img.getWidth());
-                int height = (int) Math.ceil(y * img.getHeight());
+                int width = (int) Math.ceil(x * imgWidth);
+                int height = (int) Math.ceil(y * imgHeigt);
                 List<Double> results = new ArrayList<>(runs);
                 for (int i = 0; i < runs; i++) {
                     double elapsedMs;
@@ -96,6 +101,7 @@ public class SnapshotPerfMeter extends Application {
                 }
 
                 var avg = computeCorrectedAverage(results);
+                averages[y - 1][x - 1] = avg.isPresent() ? avg.getAsDouble() : Double.NaN;
                 System.out.println(
                         String.format("Snapshot %dx%d (corrected avg): %s",
                                 width, height, avg.isPresent() ? avg.getAsDouble() + " ms" : "!failed!"));
@@ -114,8 +120,26 @@ public class SnapshotPerfMeter extends Application {
                 System.out.println("--------");
             }
         }
+        if (makeMarkdownTable) {
+            String header = "|    | ";
+            for (int x = 0; x < averages[0].length; x++) {
+                header += (x+1) * imgWidth + " |";
+            }
+            System.out.println(header);
+            String header2 = "|---|";
+            for (int x = 0; x < averages[0].length; x++) {
+                header2 += "---|";
+            }
+            System.out.println(header2);
+            for (int y = 0; y < averages.length; y++) {
+                String line = "| " + (y+1) * imgHeigt + " | ";
+                for (int x = 0; x < averages[y].length; x++) {
+                    line += String.format("%f | ", averages[y][x]);
+                }
 
-
+                System.out.println(line);
+            }
+        }
     }
 
     private OptionalDouble computeCorrectedAverage(List<Double> results) {
@@ -138,6 +162,19 @@ public class SnapshotPerfMeter extends Application {
     private boolean isOptionEnabled(String option) {
         return getParameters().getUnnamed().contains(option);
     }
+
+    private int getStep() {
+        return Integer.getInteger(getParameters().getNamed().get("step"), 1);
+    }
+
+    private int getRuns() {
+        return Integer.getInteger(getParameters().getNamed().get("runs"), 10);
+    }
+
+    private int getMax() {
+        return Integer.getInteger(getParameters().getNamed().get("max"), 8);
+    }
+
 
     private void displayInfo() {
         System.out.println("Java Version: " + System.getProperty("java.version"));
