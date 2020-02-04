@@ -42,88 +42,64 @@ import java.util.stream.Collectors;
 
 public class SnapshotPerfMeter extends Application {
 
-    private boolean isVerbose = true;
+    private int getX;
+    private int getY;
+    private int getStep;
+    private int getRuns;
+    private int getMax;
+    private boolean isVerbose;
+    private boolean isSaveImages;
 
     @Override
     public void start(Stage primaryStage) throws Exception {
+        setParams();
         primaryStage.setScene(new Scene(new StackPane()));
         primaryStage.setWidth(320);
         primaryStage.setHeight(240);
         primaryStage.show();
-        isVerbose = isOptionEnabled("--verbose");
         displayInfo();
         if (!isOptionEnabled("--version")) {
-            takeSnapshots(getStep(), getMax(), getRuns(), isOptionEnabled("--save"), true);
+            var img = new Image(getClass().getResourceAsStream("/Duke_1024.png"));
+            if (getX > 0 && getY > 0) {
+                doSnapshot(img, getX, getY, getRuns);
+
+            } else {
+                takeSnapshots(img, getStep, getMax, getRuns, true);
+            }
             System.out.println("JVM Heap Stats: " + getHeapStats());
         }
         Platform.exit();
     }
 
+    private void setParams() {
+        getX = getParamAsInt("x", -1);
+        getY = getParamAsInt("y", -1);
+        getStep = getParamAsInt("step", 1);
+        getRuns = getParamAsInt("runs", 10);
+        getMax = getParamAsInt("max", 9);
+        isSaveImages = isOptionEnabled("--save");
+        isVerbose = isOptionEnabled("--verbose");
+    }
+
+
     public static void main(String[] args) {
         launch(args);
     }
 
-    private void takeSnapshots(int step, int max, int runs, boolean saveImages, boolean makeMarkdownTable) throws Exception {
-        var img = new Image(getClass().getResourceAsStream("/Duke_1024.png"));
-        int imgWidth = (int)img.getWidth();
-        int imgHeigt = (int)img.getHeight();
-
+    private void takeSnapshots(Image img, int step, int max, int runs, boolean makeMarkdownTable) throws Exception {
+        int imgWidth = (int) img.getWidth();
+        int imgHeigt = (int) img.getHeight();
         double[/* snapshot height */][/* snapshot width */] averages = new double[max / step][max / step];
         for (int x = step; x <= max; x += step) {
             for (int y = step; y <= max; y += step) {
-                // Invoke gc explicitly, in order to minimize chances
-                // it happens during the metered block
-                System.gc();
-
-                WritableImage snapImg = null;
-                var node = new ImageView(img);
-                node.getTransforms().add(Transform.scale(x, y));
-                int width = (int) Math.ceil(x * imgWidth);
-                int height = (int) Math.ceil(y * imgHeigt);
-                List<Double> results = new ArrayList<>(runs);
-                for (int i = 0; i < runs; i++) {
-                    double elapsedMs;
-                    try {
-                        long start = System.nanoTime();
-                        snapImg = node.snapshot(null, null);
-                        long stopTime = System.nanoTime();
-                        elapsedMs = (stopTime - start) / 1000000.0;
-                        results.add(elapsedMs);
-                    } catch (Exception e) {
-                        // could not complete
-                        elapsedMs = Double.NaN;
-                    }
-                    if (isVerbose) {
-                        System.out.println(
-                                String.format("Snapshot %dx%d (run %d): %s",
-                                        width, height, i, Double.isNaN(elapsedMs) ? "!failed!" : elapsedMs + " ms"));
-                    }
-                }
-
-                var avg = computeCorrectedAverage(results);
+                var avg = doSnapshot(img, x, y, runs);
                 averages[y - 1][x - 1] = avg.isPresent() ? avg.getAsDouble() : Double.NaN;
-                System.out.println(
-                        String.format("Snapshot %dx%d (corrected avg): %s",
-                                width, height, avg.isPresent() ? avg.getAsDouble() + " ms" : "!failed!"));
-                if (saveImages) {
-                    var p = Path.of("snapshot_" + width + "x" + height + ".png");
-                    try {
-                        Files.deleteIfExists(p);
-                        ImageIO.write(
-                                SwingFXUtils.fromFXImage(snapImg, null),
-                                "png",
-                                p.toFile());
-                    } catch (Exception e) {
-                        System.err.println("Could not save image " + p + ": " + e.getMessage());
-                    }
-                }
-                System.out.println("--------");
             }
         }
         if (makeMarkdownTable) {
             String header = "|    | ";
             for (int x = 0; x < averages[0].length; x++) {
-                header += (x+1) * imgWidth + " |";
+                header += (x + 1) * imgWidth + " |";
             }
             System.out.println(header);
             String header2 = "|---|";
@@ -132,7 +108,7 @@ public class SnapshotPerfMeter extends Application {
             }
             System.out.println(header2);
             for (int y = 0; y < averages.length; y++) {
-                String line = "| " + (y+1) * imgHeigt + " | ";
+                String line = "| " + (y + 1) * imgHeigt + " | ";
                 for (int x = 0; x < averages[y].length; x++) {
                     line += String.format("%f | ", averages[y][x]);
                 }
@@ -140,6 +116,58 @@ public class SnapshotPerfMeter extends Application {
                 System.out.println(line);
             }
         }
+    }
+
+    private OptionalDouble doSnapshot(Image img, int x, int y, int runs) {
+        // Invoke gc explicitly, in order to minimize chances
+        // it happens during the metered block
+        System.gc();
+        int imgWidth = (int) img.getWidth();
+        int imgHeigt = (int) img.getHeight();
+        WritableImage snapImg = null;
+        var node = new ImageView(img);
+        node.getTransforms().add(Transform.scale(x, y));
+        int width = (int) Math.ceil(x * imgWidth);
+        int height = (int) Math.ceil(y * imgHeigt);
+        List<Double> results = new ArrayList<>(runs);
+        for (int i = 0; i < runs; i++) {
+            double elapsedMs;
+            try {
+                long start = System.nanoTime();
+                snapImg = node.snapshot(null, null);
+                long stopTime = System.nanoTime();
+                elapsedMs = (stopTime - start) / 1000000.0;
+                results.add(elapsedMs);
+            } catch (Exception e) {
+                // could not complete
+                elapsedMs = Double.NaN;
+            }
+            if (isVerbose) {
+                System.out.println(
+                        String.format("Snapshot %dx%d (run %d): %s",
+                                width, height, i, Double.isNaN(elapsedMs) ? "!failed!" : elapsedMs + " ms"));
+            }
+        }
+
+        var avg = computeCorrectedAverage(results);
+
+        System.out.println(
+                String.format("Snapshot %dx%d (corrected avg): %s",
+                        width, height, avg.isPresent() ? avg.getAsDouble() + " ms" : "!failed!"));
+        if (isSaveImages) {
+            var p = Path.of("snapshot_" + width + "x" + height + ".png");
+            try {
+                Files.deleteIfExists(p);
+                ImageIO.write(
+                        SwingFXUtils.fromFXImage(snapImg, null),
+                        "png",
+                        p.toFile());
+            } catch (Exception e) {
+                System.err.println("Could not save image " + p + ": " + e.getMessage());
+            }
+        }
+        System.out.println("--------");
+        return avg;
     }
 
     private OptionalDouble computeCorrectedAverage(List<Double> results) {
@@ -163,18 +191,13 @@ public class SnapshotPerfMeter extends Application {
         return getParameters().getUnnamed().contains(option);
     }
 
-    private int getStep() {
-        return Integer.getInteger(getParameters().getNamed().get("step"), 1);
+    private int getParamAsInt(String paramName, int defaultValue) {
+        try {
+            return Integer.parseInt(getParameters().getNamed().get(paramName));
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
     }
-
-    private int getRuns() {
-        return Integer.getInteger(getParameters().getNamed().get("runs"), 10);
-    }
-
-    private int getMax() {
-        return Integer.getInteger(getParameters().getNamed().get("max"), 8);
-    }
-
 
     private void displayInfo() {
         System.out.println("Java Version: " + System.getProperty("java.version"));
