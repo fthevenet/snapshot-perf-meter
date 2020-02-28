@@ -20,9 +20,7 @@ import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.embed.swing.SwingFXUtils;
 import javafx.scene.Scene;
-import javafx.scene.image.Image;
-import javafx.scene.image.ImageView;
-import javafx.scene.image.WritableImage;
+import javafx.scene.image.*;
 import javafx.scene.layout.StackPane;
 import javafx.scene.transform.Transform;
 import javafx.stage.Stage;
@@ -33,6 +31,8 @@ import org.apache.commons.math.stat.StatUtils;
 import javax.imageio.ImageIO;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryManagerMXBean;
+import java.nio.ByteBuffer;
+import java.nio.IntBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -49,6 +49,14 @@ public class SnapshotPerfMeter extends Application {
     private int getMax;
     private boolean isVerbose;
     private boolean isSaveImages;
+    private ImageFormat getImageFormat;
+
+    public enum ImageFormat{
+        NONE,
+        IMPLICIT,
+        BYTE_BGRA,
+        INT_ARGB
+    }
 
     @Override
     public void start(Stage primaryStage) throws Exception {
@@ -77,6 +85,7 @@ public class SnapshotPerfMeter extends Application {
         getStep = getParamAsInt("step", 1);
         getRuns = getParamAsInt("runs", 10);
         getMax = getParamAsInt("max", 9);
+        getImageFormat = getParamAsEnum("imageFormat", ImageFormat.NONE);
         isSaveImages = isOptionEnabled("--save");
         isVerbose = isOptionEnabled("--verbose");
     }
@@ -118,23 +127,27 @@ public class SnapshotPerfMeter extends Application {
         }
     }
 
-    private OptionalDouble doSnapshot(Image img, int x, int y, int runs) {
+    private OptionalDouble doSnapshot(Image img, int x, int y, int runs ) {
         // Invoke gc explicitly, in order to minimize chances
         // it happens during the metered block
         System.gc();
         int imgWidth = (int) img.getWidth();
         int imgHeigt = (int) img.getHeight();
-        WritableImage snapImg = null;
         var node = new ImageView(img);
         node.getTransforms().add(Transform.scale(x, y));
         int width = (int) Math.ceil(x * imgWidth);
         int height = (int) Math.ceil(y * imgHeigt);
+        WritableImage snapImg = createWritableImage(width, height);
         List<Double> results = new ArrayList<>(runs);
         for (int i = 0; i < runs; i++) {
             double elapsedMs;
             try {
                 long start = System.nanoTime();
-                snapImg = node.snapshot(null, null);
+                if (snapImg == null ) {
+                    snapImg = node.snapshot(null, null);
+                }else{
+                    node.snapshot(null, snapImg);
+                }
                 long stopTime = System.nanoTime();
                 elapsedMs = (stopTime - start) / 1000000.0;
                 results.add(elapsedMs);
@@ -170,6 +183,22 @@ public class SnapshotPerfMeter extends Application {
         return avg;
     }
 
+    private WritableImage createWritableImage(int width, int height) {
+        switch (getImageFormat) {
+            case IMPLICIT:
+                return new WritableImage(width, height);
+            case INT_ARGB:
+                PixelBuffer<IntBuffer> ipb = new PixelBuffer<>(width, height, IntBuffer.allocate(width * height), WritablePixelFormat.getIntArgbPreInstance());
+                return new WritableImage(ipb);
+            case BYTE_BGRA:
+                PixelBuffer<ByteBuffer> bpb = new PixelBuffer<>(width, height, ByteBuffer.allocate(width * height * 4), WritablePixelFormat.getByteBgraPreInstance());
+                return new WritableImage(bpb);
+            default:
+            case NONE:
+                return null;
+        }
+    }
+
     private OptionalDouble computeCorrectedAverage(List<Double> results) {
         try {
             Double outlier = getOutlier(results, 0.95);
@@ -195,6 +224,20 @@ public class SnapshotPerfMeter extends Application {
         try {
             return Integer.parseInt(getParameters().getNamed().get(paramName));
         } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+
+    private String getParam(String paramName, String defaultValue) {
+        String val = getParameters().getNamed().get(paramName);
+        return val == null? defaultValue : val;
+    }
+
+
+    private <E extends Enum<?>>  E getParamAsEnum(String paramName, E defaultValue) {
+        try {
+            return (E)E.valueOf(defaultValue.getClass(), getParameters().getNamed().get(paramName));
+        } catch (Exception e){
             return defaultValue;
         }
     }
